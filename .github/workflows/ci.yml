@@ -72,8 +72,9 @@ jobs:
         shell: pwsh
         run: |
           # 这个项目是从一台私人机器上长出来的，最容易泄露的是写死的绝对路径而不是密钥。
+          # 注意：本文件里就写着这些模式，所以要排除它自己，否则自己会命中自己。
           $pattern = 'DSH_Space|train-venv|Users[\\/]Administrator|D:[\\/]dsh-|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{24,}'
-          $hits = @(git grep -n -I -E $pattern -- . ':(exclude).git' 2>$null)
+          $hits = @(git grep -n -I -E $pattern -- . ':(exclude).git' ':(exclude).github/workflows/ci.yml' 2>$null)
           if ($LASTEXITCODE -eq 0 -and $hits.Count -gt 0) {
             $hits | ForEach-Object { Write-Host "::error::疑似个人痕迹或密钥：$_" }
             throw "发现疑似个人路径/密钥痕迹，请改成占位符"
