@@ -1,0 +1,6 @@
+# dsh-vector-memory bundle patch: one host row over the desktop/web profile.
+# The row name resolves from the profile's node_modules, where
+# `dsh plugin --profile desktop add <path>` installs this package.
+- insert:
+    - id: vector-memory
+      name: dsh-vector-memory

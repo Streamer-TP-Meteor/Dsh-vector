@@ -1,0 +1,56 @@
+{
+  "name": "dsh-vector-memory",
+  "version": "2.0.0",
+  "description": "Local vector memory for DeepSeek Harness: Qwen3-Embedding-0.6B + BM25 hybrid retrieval with optional Qwen3-Reranker, over your own notes, with a settings page. Fully offline.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "lib/",
+    "engine/",
+    "scripts/",
+    "cordis.patch.yml",
+    "config.example.json",
+    "README.md",
+    "INSTALL.md",
+    "AGENTS-install.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.2.2-rc.0",
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "releaseDate": "2026-11-15",
+  "dshCompat": {
+    "verifiedOn": "0.2.2-rc.3",
+    "note": "Only a floor is declared: newer DSH releases are never blocked. The plugin degrades gracefully instead of refusing to load."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "embedding",
+    "vector-search",
+    "rag",
+    "qwen3"
+  ]
+}

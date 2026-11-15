@@ -1,0 +1,15 @@
+# Python dependencies for the vector memory engine.
+#
+# Only CPU wheels are needed. Install them through scripts/setup.ps1, which
+# points pip at the CPU-only torch index so Windows does not pull a 2 GB CUDA
+# build.
+#
+# Floors, not pins: the engine is plain numpy + sentence-transformers API and
+# works across these lines. The setup script prints the exact versions it
+# installed, which is what belongs in a bug report.
+
+numpy>=1.26
+torch>=2.2
+transformers>=4.44
+sentence-transformers>=3.0
+huggingface_hub>=0.23

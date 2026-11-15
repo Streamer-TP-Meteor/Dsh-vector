@@ -1,0 +1,63 @@
+{
+  "_comment": "示例配置。scripts/setup.ps1 会生成真正的 engine/config.json；也可以照这个手写。除非你清楚后果，不要改动 data_dir 之外的值。",
+  "python": "C:\\tools\\dsh-vector-memory\\.venv\\Scripts\\python.exe",
+  "data_dir": "D:\\vector-memory-data",
+  "models": {
+    "embed": "Qwen/Qwen3-Embedding-0.6B",
+    "rerank": "Qwen/Qwen3-Reranker-0.6B"
+  },
+  "service": {
+    "host": "127.0.0.1",
+    "port": 8479,
+    "threads": 8,
+    "start_timeout_sec": 90,
+    "prewarm": true,
+    "restart_on_crash": true,
+    "exit_with_dsh": true,
+    "rerank_idle_unload_min": 5,
+    "embed_idle_unload_min": 0,
+    "allow_remote": false
+  },
+  "sources": [
+    {
+      "name": "notes",
+      "root": "D:\\my-notes",
+      "globs": ["**/*.md"],
+      "extensions": [".md", ".txt"],
+      "max_files": 200,
+      "max_file_kb": 512
+    }
+  ],
+  "project_sources": [],
+  "project_index": {
+    "auto_register": true,
+    "auto_index": true,
+    "recall_scoped": true,
+    "extensions": [".md", ".mdx", ".txt", ".rst"],
+    "max_files": 200,
+    "max_file_kb": 512,
+    "exclude_dirs": []
+  },
+  "chunk": {
+    "max_chars": 1200,
+    "min_chars": 40
+  },
+  "search": {
+    "k": 5,
+    "candidates": 30,
+    "rerank": false,
+    "rerank_top": 8,
+    "rrf_k": 60,
+    "max_snippet": 260
+  },
+  "recall": {
+    "enabled": true,
+    "k": 3,
+    "min_cos": 0.3,
+    "max_chars": 1000,
+    "timeout_ms": 1500,
+    "rerank": false,
+    "min_query_chars": 6,
+    "require_context": false
+  }
+}
