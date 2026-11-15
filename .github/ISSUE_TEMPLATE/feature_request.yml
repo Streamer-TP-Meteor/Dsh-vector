@@ -1,0 +1,45 @@
+name: feature
+description: 想要的能力、用着不顺手的地方、文档说不清的地方
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        不要求写代码，说清楚「你想解决什么问题」就够了。**描述场景比描述方案有用**。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 现在哪里别扭？哪一步要手动做很多次？哪类内容总搜不到？
+      placeholder: 每次换项目都要手动去「项目」页加一次目录，忘了就搜不到这个项目的东西。
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望它怎么工作（可选）
+      description: 有想法就写，没有也没关系
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及哪块
+      options:
+        - 检索质量（召回、排序、重排）
+        - 索引范围 / 跨盘项目
+        - 设置页界面与交互
+        - 安装与升级
+        - 性能与内存占用
+        - 文档
+        - 其它
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本
+      placeholder: 0.2.2-rc.3
+    validations:
+      required: false

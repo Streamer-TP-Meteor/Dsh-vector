@@ -32,7 +32,7 @@ C:\tools\dsh-vector-memory
 在解压出的目录里打开 PowerShell（不用管理员），执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-memory-data -ModelsDir D:\vector-memory-data\models
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-memory-data -ModelsDir D:\vector-memory-models
 ```
 
 常用参数：
@@ -62,10 +62,10 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-me
 
 ```powershell
 # 把插件装到名为 desktop 的 profile（默认桌面版就是它）
-"C:\Program Files\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "C:\tools\dsh-vector-memory"
+"<DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "C:\tools\dsh-vector-memory"
 ```
 
-其中 `C:\Program Files\DeepSeek Harness` 换成你自己的 DSH 安装目录。如果 `dsh` 已经在 PATH 里，直接 `dsh plugin --profile desktop add <路径>`。
+其中 `<DSH 安装目录>` 换成你自己的 DSH 安装目录（常见为 `C:\Users\<你>\AppData\Local\Programs\DSH` 之类）。如果 `dsh` 已经在 PATH 里，直接 `dsh plugin --profile desktop add <路径>`。
 
 装完确认 `C:\Users\<你>\.dsh\profiles\desktop\package.json` 里：
 

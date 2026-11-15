@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（请勿公开提 issue）
+    url: https://github.com/Streamer-TP-Meteor/Dsh-vector/security/advisories/new
+    about: 用私密漏洞报告提交，只有维护者能看到。详见 SECURITY.md
+  - name: 安装问题先看文档
+    url: https://github.com/Streamer-TP-Meteor/Dsh-vector/blob/main/INSTALL.md
+    about: 常见问题（Python 没装、torch 太大、模型下载超时）在 INSTALL.md 里有答案

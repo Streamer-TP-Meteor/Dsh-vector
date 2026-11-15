@@ -1,0 +1,92 @@
+name: bug
+description: 装不上、起不来、搜不准、界面报错——任何实际使用中的问题
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量把下面几项填全。**信息越具体，修得越快**——尤其是第 3 项的日志，它能省掉两三轮来回。
+
+        > 提交前请确认：贴出来的内容里没有你的 API key、token、私人笔记正文。
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本
+      description: 在 DSH 里执行 `dsh --version`，或看 设置 → 关于
+      placeholder: 0.2.2-rc.3
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows 版本
+      description: 例如 Windows 11 26100 / Windows 10 22H2
+      placeholder: Windows 11 26100
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python 版本
+      description: "`python --version` 的输出（setup.ps1 用的是哪个就填哪个）"
+      placeholder: Python 3.12.13
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 卡在哪一步
+      options:
+        - 解压 / 准备阶段
+        - 运行 scripts\setup.ps1（装依赖、下模型）
+        - 装进 DSH（dsh plugin ... add）
+        - 重启后设置页看不到「向量记忆」
+        - 设置页能打开，但服务起不来 / 一直转圈
+        - 检索结果不准 / 检索不到
+        - 自动召回不生效（对话里没有【向量检索 · 本机记忆】块）
+        - 其它
+    validations:
+      required: true
+  - type: textarea
+    id: setup-output
+    attributes:
+      label: setup.ps1 的完整输出
+      description: 重新跑一遍 `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`，把窗口里的文字整段复制过来（如果失败就复制最后 30 行）
+      render: text
+      placeholder: |
+        === dsh-vector-memory setup ===
+        [1/7] Python ...
+        ...
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 你做了什么、期望看到什么、实际看到什么
+      placeholder: |
+        1. 打开 设置 → 向量记忆
+        2. 点「立即增量索引」
+        3. 期望：显示索引了 N 个块；实际：一直显示「运行中」
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（关键）
+      description: |
+        请把这些文件的内容贴上来（有多少贴多少）：
+        - `%LOCALAPPDATA%\dsh-vector-memory\logs\serve.log`
+        - 设置 → 向量记忆 → 维护 → 任务日志（复制出来）
+        - DSH 自己的日志里与 `vector-memory` 相关的行
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我贴的内容里没有密钥、token 或私人笔记正文
+          required: true

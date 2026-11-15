@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 只读权限：PR 来自 fork 时也拿不到写权限，避免任何“提个 PR 就能改仓库”的可能
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: syntax & sanity
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: JS 语法（node --check）
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path src, lib -Recurse -Filter *.js -File)
+          if ($files.Count -eq 0) { throw "没有找到任何 JS 文件，检查范围可能写错了" }
+          foreach ($f in $files) {
+            node --check $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "语法错误：$($f.FullName)" }
+          }
+          "checked $($files.Count) js file(s)"
+
+      - name: Python 语法（py_compile）
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path engine, scripts -Recurse -Filter *.py -File)
+          if ($files.Count -eq 0) { throw "没有找到任何 Python 文件" }
+          foreach ($f in $files) {
+            python -m py_compile $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "语法错误：$($f.FullName)" }
+          }
+          "checked $($files.Count) py file(s)"
+
+      - name: JSON 可解析
+        shell: pwsh
+        run: |
+          python -c "import json,io; [json.load(io.open(p, encoding='utf-8')) for p in ('package.json','config.example.json')]; print('json ok')"
+
+      - name: PowerShell 语法（setup.ps1 / download_models 包装）
+        shell: pwsh
+        run: |
+          $target = Resolve-Path scripts/setup.ps1
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($target, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            foreach ($e in $errors) { Write-Host ("::error file=scripts/setup.ps1,line={0}::{1}" -f $e.Extent.StartLineNumber, $e.Message) }
+            exit 1
+          }
+          "setup.ps1 parses"
+
+      - name: 不含个人路径 / 密钥痕迹
+        shell: pwsh
+        run: |
+          # 这个项目是从一台私人机器上长出来的，最容易泄露的是写死的绝对路径而不是密钥。
+          $pattern = 'DSH_Space|train-venv|Users[\\/]Administrator|D:[\\/]dsh-|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{24,}'
+          $hits = @(git grep -n -I -E $pattern -- . ':(exclude).git' 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $hits.Count -gt 0) {
+            $hits | ForEach-Object { Write-Host "::error::疑似个人痕迹或密钥：$_" }
+            throw "发现疑似个人路径/密钥痕迹，请改成占位符"
+          }
+          "no personal paths or key patterns"

@@ -1,5 +1,8 @@
 # dsh-vector-memory
 
+[![ci](https://github.com/Streamer-TP-Meteor/Dsh-vector/actions/workflows/ci.yml/badge.svg)](https://github.com/Streamer-TP-Meteor/Dsh-vector/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 的**本地语义记忆层**：把你的笔记、决策记录、项目文档变成可被任意模型直接检索的知识库。
 
 不联网、不上传、不要 API key。检索由本机的 `Qwen3-Embedding-0.6B` 完成，全部计算在你自己的 CPU 上。
