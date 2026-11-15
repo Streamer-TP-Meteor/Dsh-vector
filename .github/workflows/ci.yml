@@ -80,3 +80,5 @@ jobs:
             throw "发现疑似个人路径/密钥痕迹，请改成占位符"
           }
           "no personal paths or key patterns"
+          # git grep 没命中时退出码是 1，会把整步判成失败，所以显式归零
+          exit 0
