@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party components this plugin talks to (not bundled with it):
-
-- Qwen3-Embedding-0.6B / Qwen3-Reranker-0.6B — Apache License 2.0, Alibaba Qwen.
-- PyTorch — BSD-3-Clause. sentence-transformers, transformers, numpy,
-  huggingface_hub — Apache-2.0 / BSD-3-Clause as declared by their authors.

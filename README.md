@@ -56,17 +56,28 @@
 
 ## 安装
 
-Windows 上一条命令（不需要管理员）：
+Windows 上四步（不需要管理员）：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-memory-data
-```
+1. 把发布包解压到任意目录，例如 `C:\tools\dsh-vector-memory`。
+2. 在该目录跑安装脚本 —— 建私有 `.venv`、装依赖、生成 `engine/config.json`：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-memory-data
+   ```
+
+3. **把它装进 DSH 的 profile**（这一步别漏：只跑 `setup.ps1` 不会让 DSH 加载插件）：
+
+   ```
+   dsh plugin --profile desktop add C:\tools\dsh-vector-memory
+   ```
+
+4. 重启 DSH —— 插件只在启动时加载。
 
 细节、参数、验收与排错见 **[INSTALL.md](INSTALL.md)**；想让 AI 代劳，给它看 **[AGENTS-install.md](AGENTS-install.md)**。
 
 ## 怎么用
 
-装好、重启 DSH 之后：
+装好（上面第 3、4 步做完）、重启 DSH 之后：
 
 - **什么都不用做**——新会话的第一轮就会带上检索块。想确认：设置 → 向量记忆 → 状态 → 「已注入」计数会增长。
 - **让它查以前的决定**：直接问「上次那个方案是怎么定的」，模型会先 `vmemory_search` 再答，并给出 `文件:行号`。
@@ -157,11 +168,11 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-me
 
 - 插件清单声明 `engines.dsh: ">=0.2.2-rc.0"`：**只有下限，没有上限**。新的 DSH 出来不会因此拦住你；插件会在能跑的前提下继续工作。
 - 已在 `0.2.2-rc.2` / `0.2.2-rc.3` / `0.2.2-rc.5` 上验证。
-- 版本号规则：`<系列>.<插件迭代>.<DSH 代际>`，例如 `1.8.22` = 系列 1、第 8 次迭代、适配 DSH 0.2.2 一代。只有确认适配新一代 DSH 时才动最后一位。
+- 版本号规则：开发期用 `<系列>.<插件迭代>.<DSH 代际>`（例如 `1.8.22` = 系列 1、第 8 次迭代、适配 DSH 0.2.2 一代，只有确认适配新一代 DSH 才动最后一位）。**从首个可分发版本起坐标重置为发布号**：`2.0.0`、`2.1.0` 是发布坐标，最后一位不再代表 DSH 代际；兼容性以上面 `engines.dsh` 的声明为准。
 
 ## 安全
 
-不联网、不上传、不删除文件、不要管理员、不改 PATH。
+运行期不联网、不上传、不碰你的文档、不要管理员、不改 PATH（安装期会下载依赖与模型，见下一段）。
 
 本机 HTTP 引擎默认只监听 `127.0.0.1`，并校验 `Host` / `Origin` / `Sec-Fetch-Site`：网页脚本无法跨站调用 `/search` 或 `/shutdown`。想改成局域网共享需要显式打开 `service.allow_remote`。完整的能力边界与不设防的部分写在 **[SECURITY.md](SECURITY.md)**。
 
@@ -171,7 +182,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir D:\vector-me
 dsh plugin --profile desktop remove dsh-vector-memory
 ```
 
-再删掉插件目录和数据目录即可。它不写注册表、不装系统服务。
+再删掉插件目录和数据目录即可（建议先丢回收站，确认没别的东西再清空）。它不写注册表、不装系统服务。
 
 ## 作者的话
 
@@ -187,4 +198,4 @@ dsh plugin --profile desktop remove dsh-vector-memory
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。模型权重由阿里通义千问以 Apache-2.0 发布，不在本仓库内分发。
+MIT，见 [LICENSE](LICENSE)。本仓库不打包任何第三方代码；运行时用到的模型与 Python 依赖各自的许可证见 [NOTICE.md](NOTICE.md)（模型权重由阿里通义千问以 Apache-2.0 发布，不在本仓库内分发）。

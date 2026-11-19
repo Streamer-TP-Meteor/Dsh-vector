@@ -25,6 +25,7 @@
     "AGENTS-install.md",
     "SECURITY.md",
     "LICENSE",
+    "NOTICE.md",
     "!**/__pycache__/",
     "!**/__pycache__/**",
     "!**/*.pyc",

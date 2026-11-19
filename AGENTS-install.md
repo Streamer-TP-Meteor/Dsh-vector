@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir <用户给�
 <DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd plugin --profile desktop add "<插件绝对路径>"
 ```
 
-- DSH 可能安装在任意目录（例如某个盘符下的 `...\DSH-dsk`，或 `C:\Program Files\DeepSeek Harness`），先用 `Get-Command dsh` 或问用户确认，不要猜。
+- DSH 可能安装在任意目录（例如 `C:\Program Files\DeepSeek Harness`，或某个盘符下的自定义目录），先用 `Get-Command dsh` 或问用户确认，不要猜。
 - profile 名默认 `desktop`；若用户用的是别的 profile，先问清楚。
 - 这个命令内部是 pnpm，失败常见原因是目录里有 `node_modules` 锁或网络不通；把原始报错交给用户，不要自己 `rm -rf`。
 
@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir <用户给�
 
 重启后按顺序验证，任何一项失败就报告，而不是反复重启：
 
-1. `GET http://127.0.0.1:<端口>/api/dsh-vector-memory/state`（端口在启动日志里，或问用户当前 DSH 界面地址）——应返回 JSON，`plugin.version` 为 `2.0.0`，`service.running` 最好为 `true`。
+1. `GET http://127.0.0.1:<端口>/api/dsh-vector-memory/state`（端口在启动日志里，或问用户当前 DSH 界面地址）——应返回 JSON，`plugin.version` 应为 package.json 里声明的版本（2.1.0 起为 `2.1.x`），`service.running` 最好为 `true`。
    - 本机 curl 可能需要加请求头 `x-vector-memory-client: vector-memory/1`；返回 403 是期望行为之一（说明接口只给宿主用）。
 2. 让用户打开 **设置 → 向量记忆**：应看到版本徽标、服务状态、索引块数。
 3. 点 **维护 → 预热服务**，确认「服务运行中」；再点 **立即增量索引**，确认任务从 `running` 变 `done`。
@@ -66,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir <用户给�
 <DSH cli> plugin --profile desktop remove dsh-vector-memory
 ```
 
-然后删插件目录与数据目录即可。插件不写注册表、不装系统服务、不改 PATH，删目录即彻底卸载。
+然后删插件目录与数据目录即可（在 Windows 上优先走回收站，别用 `rm -rf`/`Remove-Item -Recurse -Force` 永久删）。插件不写注册表、不装系统服务、不改 PATH，删目录即彻底卸载。
 
 ## 6. 边界（不要做的事）
 
