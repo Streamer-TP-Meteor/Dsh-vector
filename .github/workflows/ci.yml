@@ -43,20 +43,18 @@ jobs:
       - name: Python 语法（ast 解析）
         shell: pwsh
         run: |
-          # 不要用 py_compile：它会写 __pycache__/*.pyc，而下面的"打包垃圾门"正是要拒绝这些文件，
-          # 于是检查步骤自己把后面的门踩响（这条 CI 曾因此一直红）。ast.parse 只解析、不落盘。
+          # 不用 py_compile：它会写 __pycache__/*.pyc，而本工作流最后一步正是拒绝这些文件，
+          # 检查步骤会自己踩响后面的门（这条 CI 曾因此一直红）。ast.parse 只解析、不落盘。
           $files = @(Get-ChildItem -Path engine, scripts -Recurse -Filter *.py -File)
           if ($files.Count -eq 0) { throw "没有找到任何 Python 文件" }
-          $code = @'
-import ast, sys, pathlib
-for p in sys.argv[1:]:
-    ast.parse(pathlib.Path(p).read_text(encoding="utf-8"), p)
-print("checked %d py file(s)" % (len(sys.argv) - 1))
-'@
-          python -c $code @($files.FullName)
-          if ($LASTEXITCODE -ne 0) { throw "Python 语法错误" }
+          $snippet = "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), sys.argv[1])"
+          foreach ($f in $files) {
+            python -c $snippet $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "语法错误：$($f.FullName)" }
+          }
           $leftover = @(Get-ChildItem -Path engine, scripts -Recurse -Force -Include *.pyc,*.pyo -ErrorAction SilentlyContinue)
           if ($leftover.Count -gt 0) { throw "语法检查不应留下字节码：$($leftover[0].FullName)" }
+          "checked $($files.Count) py file(s)"
 
       - name: JSON 可解析
         shell: pwsh
