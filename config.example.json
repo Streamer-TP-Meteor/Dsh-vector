@@ -1,5 +1,5 @@
 {
-  "_comment": "示例配置。scripts/setup.ps1 会生成真正的 engine/config.json；也可以照这个手写。除非你清楚后果，不要改动 data_dir 之外的值。",
+  "_comment": "示例配置。scripts/setup.ps1 会生成真正的 engine/config.json；也可以照这个手写。真正装到哪台机器上的路径只存在 config.json 里——代码里没有写死任何路径。",
   "python": "C:\\tools\\dsh-vector-memory\\.venv\\Scripts\\python.exe",
   "data_dir": "D:\\vector-memory-data",
   "models": {
@@ -9,23 +9,39 @@
   "service": {
     "host": "127.0.0.1",
     "port": 8479,
-    "threads": 8,
+    "threads": 12,
+    "max_concurrent": 6,
     "start_timeout_sec": 90,
     "prewarm": true,
     "restart_on_crash": true,
     "exit_with_dsh": true,
     "rerank_idle_unload_min": 5,
     "embed_idle_unload_min": 0,
-    "allow_remote": false
+    "allow_remote": false,
+    "recycle_rss_mb": 3000,
+    "recycle_idle_min": 10,
+    "load_retry_sec": 120
+  },
+  "embed": {
+    "dim": 1024,
+    "query_instruction": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+    "batch": 4
   },
   "sources": [
     {
       "name": "notes",
+      "label": "我的笔记",
       "root": "D:\\my-notes",
-      "globs": ["**/*.md"],
-      "extensions": [".md", ".txt"],
+      "globs": [
+        "**/*.md"
+      ],
+      "extensions": [
+        ".md",
+        ".txt"
+      ],
       "max_files": 200,
-      "max_file_kb": 512
+      "max_file_kb": 512,
+      "enabled": true
     }
   ],
   "project_sources": [],
@@ -33,14 +49,33 @@
     "auto_register": true,
     "auto_index": true,
     "recall_scoped": true,
-    "extensions": [".md", ".mdx", ".txt", ".rst"],
+    "extensions": [
+      ".md",
+      ".mdx",
+      ".txt",
+      ".rst",
+      ".docx",
+      ".pdf",
+      ".py",
+      ".js",
+      ".ts",
+      ".cs",
+      ".gd",
+      ".lua"
+    ],
     "max_files": 200,
     "max_file_kb": 512,
-    "exclude_dirs": []
+    "max_pdf_kb": 8192,
+    "exclude_dirs": [],
+    "code_index": true,
+    "max_symbols_per_file": 20
   },
   "chunk": {
     "max_chars": 1200,
-    "min_chars": 40
+    "min_chars": 40,
+    "split_long": false,
+    "split_chars": 700,
+    "hard_max_chars": 8000
   },
   "search": {
     "k": 5,
@@ -48,16 +83,51 @@
     "rerank": false,
     "rerank_top": 8,
     "rrf_k": 60,
-    "max_snippet": 260
+    "max_snippet": 260,
+    "ident_boost": 1.5
+  },
+  "outline": {
+    "enabled": true,
+    "per_src": 4,
+    "max_sources": 4,
+    "max_topics": 3,
+    "max_chars": 700
+  },
+  "index": {
+    "auto": true,
+    "on_startup": true,
+    "interval_min": 0,
+    "startup_delay_sec": 12
+  },
+  "handoff": {
+    "enabled": true,
+    "max_sessions": 3,
+    "max_chars": 560,
+    "transcripts_dir": "",
+    "sessions_dir": "",
+    "auto_archive": true,
+    "archive_interval_min": 120
+  },
+  "cards": {
+    "enabled": true,
+    "k": 1,
+    "min_score": 12,
+    "max_chars": 320
   },
   "recall": {
     "enabled": true,
     "k": 3,
-    "min_cos": 0.3,
+    "min_cos": 0.45,
+    "weak_cos": 0.55,
     "max_chars": 1000,
     "timeout_ms": 1500,
     "rerank": false,
     "min_query_chars": 6,
-    "require_context": false
+    "require_context": false,
+    "show_date": true,
+    "stale_days": 180
+  },
+  "ui": {
+    "language": "auto"
   }
 }

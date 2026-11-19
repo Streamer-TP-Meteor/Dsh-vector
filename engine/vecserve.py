@@ -20,8 +20,9 @@ _lock = threading.Lock()
 _state = {
     "cfg": None, "embed": None, "rerank": None,
     "embed_err": None, "rerank_err": None,
+    "embed_err_at": 0, "rerank_err_at": 0,
     "model_name": None, "dim": None,
-    "t0": time.time(), "calls": 0, "last_ms": 0,
+    "t0": time.time(), "calls": 0, "last_ms": 0, "last_req_at": 0.0,
 }
 
 
@@ -69,8 +70,29 @@ def _load_rerank(cfg):
             "yes": tok.convert_tokens_to_ids("yes"), "no": tok.convert_tokens_to_ids("no")}
 
 
+def _retry_ready(err_key, at_key, retry_sec):
+    """失败态到点就清掉，允许重试。
+
+    审计 PY-02：以前 embed 加载失败会把 embed_err 永久钉住（只有重启进程才能恢复），
+    模型目录一时被占用/半拷贝完就再也起不来了。
+    """
+    err = _state.get(err_key)
+    if not err:
+        return True
+    at = _state.get(at_key) or 0
+    if retry_sec > 0 and (time.time() - at) < retry_sec:
+        return False
+    with _lock:
+        if _state.get(err_key) == err and (_state.get(at_key) or 0) == at:
+            _state[err_key] = None
+            _state[at_key] = 0
+            print("[vecserve] 重试加载（上次失败：%s）" % err, flush=True)
+    return True
+
+
 def get_embed(cfg):
-    if _state["embed"] is None and _state["embed_err"] is None:
+    retry_sec = float(cfg.get("service", {}).get("load_retry_sec", 120) or 0)
+    if _state["embed"] is None and _retry_ready("embed_err", "embed_err_at", retry_sec):
         with _lock:
             if _state["embed"] is None and _state["embed_err"] is None:
                 try:
@@ -80,12 +102,14 @@ def get_embed(cfg):
                     print("[vecserve] embed 就绪 %.1fs dim=%s" % (time.time() - t, _state["dim"]), flush=True)
                 except Exception as e:
                     _state["embed_err"] = "%s: %s" % (type(e).__name__, e)
-                    print("[vecserve] embed 加载失败 %s" % _state["embed_err"], flush=True)
+                    _state["embed_err_at"] = time.time()
+                    print("[vecserve] embed 加载失败 %s（%.0fs 后重试）" % (_state["embed_err"], retry_sec), flush=True)
     return _state["embed"]
 
 
 def get_rerank(cfg):
-    if _state["rerank"] is None and _state["rerank_err"] is None:
+    retry_sec = float(cfg.get("service", {}).get("load_retry_sec", 120) or 0)
+    if _state["rerank"] is None and _retry_ready("rerank_err", "rerank_err_at", retry_sec):
         with _lock:
             if _state["rerank"] is None and _state["rerank_err"] is None:
                 try:
@@ -94,7 +118,8 @@ def get_rerank(cfg):
                     print("[vecserve] rerank 就绪 %.1fs" % (time.time() - t), flush=True)
                 except Exception as e:
                     _state["rerank_err"] = "%s: %s" % (type(e).__name__, e)
-                    print("[vecserve] rerank 加载失败 %s" % _state["rerank_err"], flush=True)
+                    _state["rerank_err_at"] = time.time()
+                    print("[vecserve] rerank 加载失败 %s（%.0fs 后重试）" % (_state["rerank_err"], retry_sec), flush=True)
     return _state["rerank"]
 
 
@@ -303,12 +328,52 @@ def _vindex():
     return _vindex_mod[0]
 
 
+def _host_name(value):
+    v = str(value or "").strip().lower()
+    if not v:
+        return ""
+    if v.startswith("["):
+        return v.split("]")[0].strip("[]")
+    return v.split(":")[0].strip("[]")
+
+
+def _is_loopback_name(name):
+    return name in {"127.0.0.1", "127.0.0.2", "localhost", "::1"} or name.startswith("127.")
+
+
+def _allow_origin(cfg, origin):
+    """浏览器跨站请求必带 Origin：只放行回环来源（审计 SEC-01）。"""
+    # 缺 Origin = 本机非浏览器客户端（CLI / 脚本），放行；
+    # 但 Origin: null 是「不透明来源」（sandbox iframe / file:// 页面），不能当本机客户端放行。
+    if origin == "null":
+        return False
+    if not origin:
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        host = _host_name(urlparse(origin).hostname)
+    except Exception:
+        return False
+    if _is_loopback_name(host):
+        return True
+    service = cfg.get("service") or {}
+    bind = _host_name(service.get("host", "127.0.0.1"))
+    return bool(host and host == bind and service.get("allow_remote"))
+
+
 def make_handler(cfg, server_holder):
 
     from http.server import BaseHTTPRequestHandler
 
+    class BodyTooLarge(Exception):
+        pass
+
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # 防止慢速客户端长期占着连接（ThreadingHTTPServer 每个连接一个线程）
+        timeout = 300
+        MAX_BODY = 32 * 1024 * 1024
 
         def log_message(self, fmt, *args):
             pass
@@ -320,6 +385,31 @@ def make_handler(cfg, server_holder):
                 super().handle()
             except (ConnectionError, OSError):
                 self.close_connection = True
+
+        def _guard(self):
+            """只接受本机程序的请求。
+
+            审计 SEC-01/SEC-02：以前任何能发 HTTP 的本机程序（包括浏览器里的网页）
+            都能调 /shutdown、读到 /search 的全部记忆。这里用 Host + Origin 拦住
+            DNS rebinding 和网页跨站请求。
+            """
+            service = cfg.get("service") or {}
+            host = _host_name(self.headers.get("Host"))
+            bind = _host_name(service.get("host", "127.0.0.1"))
+            host_ok = _is_loopback_name(host) or (host == bind and bool(service.get("allow_remote")))
+            if not host_ok:
+                self.close_connection = True
+                self._send({"error": "forbidden host"}, 403)
+                return False
+            if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+                self.close_connection = True
+                self._send({"error": "cross-site request rejected"}, 403)
+                return False
+            if not _allow_origin(cfg, self.headers.get("Origin")):
+                self.close_connection = True
+                self._send({"error": "forbidden origin"}, 403)
+                return False
+            return True
 
         def _send(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -334,15 +424,21 @@ def make_handler(cfg, server_holder):
 
         def _body(self):
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > self.MAX_BODY:
+                self.close_connection = True
+                raise BodyTooLarge("请求体太大（%d 字节，上限 %d）" % (n, self.MAX_BODY))
             return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
 
         def do_GET(self):
+            if not self._guard():
+                return
             if self.path.startswith("/health"):
                 self._send({"ok": True, "embed": _state["embed"] is not None,
                             "rerank": _state["rerank"] is not None,
                             "embed_error": _state["embed_err"], "rerank_error": _state["rerank_err"],
                             "model": os.path.basename(cfg["models"]["embed"]), "dim": _state["dim"],
                             "rss_mb": rss_mb(), "uptime_s": int(time.time() - _state["t0"]),
+                            "last_req_age_s": (round(time.time() - _state["last_req_at"], 1) if _state["last_req_at"] else None),
                             "watch_pid": _watch["pid"]})
             elif self.path.startswith("/stats"):
                 self._send({"calls": _state["calls"], "last_ms": _state["last_ms"],
@@ -354,9 +450,12 @@ def make_handler(cfg, server_holder):
                 self._send({"error": "not found"}, 404)
 
         def do_POST(self):
+            if not self._guard():
+                return
             try:
                 body = self._body()
                 t = time.time()
+                _state["last_req_at"] = t
                 if self.path.startswith("/embed"):
                     v = do_embed(cfg, body.get("texts", []), body.get("kind", "document"))
                     ms = int((time.time() - t) * 1000)
@@ -400,6 +499,9 @@ def make_handler(cfg, server_holder):
                     threading.Thread(target=server_holder[0].shutdown, daemon=True).start()
                 else:
                     self._send({"error": "not found"}, 404)
+            except BodyTooLarge as e:
+                self.close_connection = True
+                self._send({"error": str(e)}, 413)
             except Exception as e:
                 self._send({"error": "%s: %s" % (type(e).__name__, e)}, 500)
 

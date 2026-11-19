@@ -13,7 +13,16 @@ import {
 import { buildIndex, health, normalizeHits, search, startService, stopService } from './engine.js'
 import { pushEvent } from './events.js'
 import { activeJob, cancelJob, getJob, publicJob, startJob, summariseJobs } from './jobs.js'
-import { listProjects, registerProject, removeProject } from './projects.js'
+import {
+  labelFor,
+  listProjects,
+  projectScopeOnly,
+  projectSourceFor,
+  recallScopeFor,
+  registerProject,
+  removeProject,
+  setProjectEnabled,
+} from './projects.js'
 
 /**
  * Same-origin JSON bridge for the settings page.
@@ -118,6 +127,9 @@ export function makeRoutes({
   supervisor,
   recall = null,
   projects = null,
+  session = null,
+  archive = null,
+  cards = null,
   log = () => {},
   ctx,
 } = {}) {
@@ -222,6 +234,29 @@ export function makeRoutes({
     ].join('')
   }
 
+  /**
+   * 全量重建会让服务内存一路涨（实测每块约 +2.2MB，5000 块到 ~10GB，且不回落）。
+   * 重建结束后如果 RSS 超过 `service.recycle_rss_mb`，就把服务重启一次把内存还回去：
+   * 代价只有下次查询的冷启动（约 10 秒），换来的是不再顶着 10GB 跑一整天。
+   */
+  async function recycleServiceIfBloated(config, log) {
+    const threshold = Number(config?.service?.recycle_rss_mb)
+    if (!Number.isFinite(threshold) || threshold <= 0) return null
+    const before = await health(config)
+    const rss = Number(before?.rss_mb) || 0
+    if (rss < threshold) return null
+    log(`服务内存 ${Math.round(rss)}MB（阈值 ${threshold}MB），重启一次服务回收内存…`)
+    const stopped = await stopService(config)
+    if (!stopped?.stopped) {
+      log('旧服务没有停下来，跳过重启（索引结果不受影响）')
+      return { before: rss, restarted: false }
+    }
+    const started = await startService(config, { onLine: (line) => log(line) })
+    const after = Number(started?.rss_mb) || null
+    log(`服务已重启：embed=${Boolean(started?.embed)} 内存 ${after ? Math.round(after) + 'MB' : '未知'}`)
+    return { before: rss, restarted: true, after }
+  }
+
   async function indexRoute(body) {
     const force = body?.force === true
     const only = Array.isArray(body?.only) ? body.only.map(String) : undefined
@@ -232,6 +267,12 @@ export function makeRoutes({
       runner: async ({ log: jobLog, signal }) => {
         const stats = await buildIndex(config, { force, only, signal, onLine: (line) => jobLog(line) })
         jobLog(indexLabel(stats))
+        try {
+          const recycled = await recycleServiceIfBloated(config, jobLog)
+          if (recycled) stats.recycled = recycled
+        } catch (error) {
+          jobLog(`重启服务失败（不影响索引结果）：${error instanceof Error ? error.message : String(error)}`)
+        }
         return stats
       },
     })
@@ -342,9 +383,163 @@ export function makeRoutes({
     return openPath(resolved)
   }
 
+  // ---- 会话/项目级向量记忆开关（会话输入区的「记忆」按钮用） ----
+  // 全局 config 管「这台机器允许什么」，session-prefs.json 管「这个会话 / 这个目录现在想不想用」。
+  // 这里只做读写与解析，不自己判定优先级：解析逻辑在 sessionprefs.js 里，一份实现两处用。
+
+  const sessionRuntime = session || null
+
+  const describePatch = (patch) => {
+    if (!patch || typeof patch !== 'object') return '（无变化）'
+    const parts = Object.entries(patch).map(([key, value]) => `${key}=${value === null ? '跟随上级' : String(value)}`)
+    return parts.join(' ') || '（无变化）'
+  }
+
+  /**
+   * Everything the in-session switch needs in one round trip: this session's
+   * stored preference, the project default it inherits, the directory it resolved
+   * to, and what that adds up to *effectively*.
+   */
+  async function sessionState(sessionId, rootHint = '') {
+    const prefs = sessionRuntime?.prefs || null
+    const id = String(sessionId || '').trim()
+    if (!prefs) {
+      return { ok: true, available: false, sessionId: id, reason: '会话级开关未启用（插件没有加载偏好层）' }
+    }
+    await prefs.ready()
+    let root = String(rootHint || '').trim()
+    if (!root) {
+      try {
+        root = (await sessionRuntime.rootFor?.(id)) || ''
+      } catch {
+        root = ''
+      }
+    }
+    if (!root) root = prefs.sessionRoot(id) || ''
+
+    const { config } = await readConfig()
+    const resolved = prefs.resolveNow({ sessionId: id, root: root || null })
+    const globalRecall = config?.recall?.enabled !== false
+    const recallOn = resolved.recall === 'off' ? false : resolved.recall === 'on' ? true : globalRecall
+    const awarenessOn = resolved.awareness !== 'off'
+    const handoffGlobal = config?.handoff?.enabled !== false
+    const handoffOn = resolved.handoff === 'off' ? false : resolved.handoff === 'on' ? true : handoffGlobal
+    const scopeMode = resolved.scope || 'auto'
+    const scopedSetting = config?.project_index?.recall_scoped !== false
+
+    let brief = { enabled: handoffGlobal, sessions: 0, chars: 0, dir: '' }
+    try {
+      if (sessionRuntime?.handoff?.preview) brief = sessionRuntime.handoff.preview(root)
+    } catch {
+      /* 归档还没物化时保持空状态，不影响开关本身 */
+    }
+
+    let scope = null
+    try {
+      if (scopeMode === 'all') scope = null
+      else if (scopeMode === 'memory') scope = ['memory']
+      else if (scopeMode === 'project') scope = await projectScopeOnly(root, { config })
+      else scope = root ? await recallScopeFor(root, { scoped: scopedSetting, config }) : null
+    } catch {
+      scope = null
+    }
+
+    const source = root ? projectSourceFor(config, root) : null
+    return {
+      ok: true,
+      available: true,
+      sessionId: id,
+      root: root || null,
+      project: {
+        label: root ? labelFor(root) : null,
+        registered: Boolean(source),
+        source: source ? { name: source.name, label: source.label, enabled: source.enabled !== false } : null,
+      },
+      prefs: { session: resolved.session || {}, project: resolved.project?.entry || {} },
+      origin: resolved.origin,
+      effective: { recall: recallOn, awareness: awarenessOn, handoff: handoffOn, scopeMode, scope },
+      brief,
+      global: { recall: globalRecall, scoped: scopedSetting, handoff: handoffGlobal },
+      modes: sessionRuntime.modes || [],
+    }
+  }
+
+  async function sessionSetRoute(body) {
+    const prefs = sessionRuntime?.prefs || null
+    if (!prefs) throw badRequest('会话级开关未启用')
+    const sessionId = String(body?.sessionId ?? '').trim()
+    if (!sessionId) throw badRequest('缺少会话 id')
+    const root = body?.root ? String(body.root) : null
+    await prefs.updateSession(sessionId, body?.patch, { root })
+    recall?.invalidateAll?.()
+    note(`本会话的记忆开关已更新：${sessionId.slice(0, 8)} ${describePatch(body?.patch)}`)
+    return sessionState(sessionId, root || '')
+  }
+
+  async function projectSetRoute(body) {
+    const prefs = sessionRuntime?.prefs || null
+    if (!prefs) throw badRequest('会话级开关未启用')
+    const root = String(body?.root ?? '').trim()
+    if (!root) throw badRequest('缺少项目目录')
+    await prefs.updateProject(root, body?.patch)
+    recall?.invalidateAll?.()
+    note(`项目默认开关已更新：${labelFor(root)} ${describePatch(body?.patch)}`)
+    return sessionState(body?.sessionId ?? '', root)
+  }
+
+  async function projectIndexRoute(body) {
+    const root = String(body?.root ?? '').trim()
+    if (!root) throw badRequest('缺少项目目录')
+    const { config } = await readConfig()
+    const source = projectSourceFor(config, root)
+    if (!source) throw badRequest('这个目录还没有登记成项目源')
+    const enabled = body?.enabled !== false
+    const result = await setProjectEnabled(source.name, enabled)
+    if (!result.ok) throw badRequest(result.reason)
+    recall?.invalidateAll?.()
+    note(`项目索引已${enabled ? '恢复' : '暂停'}：${source.label || source.name}`)
+    return sessionState(body?.sessionId ?? '', root)
+  }
+
   /** Relative path (no prefix) -> handler. Both dispatch and registration read this table. */
+  // 会话归档（S0）：把 .jsonl.zstd 物化成 md + manifest，开场简报与文本检索都靠它
+  const archiveStatusRoute = async () => {
+    if (!archive || typeof archive.status !== 'function') {
+      return { ok: true, available: false, reason: '归档层未启用（插件没有加载归档器）' }
+    }
+    return { ok: true, available: true, ...(await archive.status()) }
+  }
+  const archiveRunRoute = async (body = {}) => {
+    if (!archive || typeof archive.run !== 'function') throw badRequest('归档层未启用')
+    const result = await archive.run({ force: body?.force === true, reason: body?.reason || 'manual' })
+    // 归档变了，开场简报的缓存必须失效，否则新会话看到的还是旧简报
+    try {
+      session?.handoff?.invalidate?.()
+    } catch {
+      // ignore
+    }
+    const status = await archiveStatusRoute()
+    return { ok: true, archive: status, digest: result || null }
+  }
+
+  // 归档卡片（S3）：从 md 里的「压缩摘要」切卡，按字面分给本回合补一条旧会话线索
+  const cardsStatusRoute = async () => {
+    if (!cards || typeof cards.snapshot !== 'function') {
+      return { ok: true, available: false, reason: '归档卡片未启用（插件没有加载卡片层）' }
+    }
+    const config = (await readConfig())?.config ?? null
+    return { ok: true, available: true, ...cards.snapshot(config) }
+  }
+
   const ROUTES = [
-    ['GET', '/state', () => state()],
+    // state() 是 async：必须先 await 再展开，否则只拿到 {archive, cards}，
+    // 设置页的版本/配置/索引/项目/服务五栏会全空（外部审计 HOST-01 实测发现的回归）。
+    [
+      'GET',
+      '/state',
+      async () => ({ ...(await state()), archive: await archiveStatusRoute(), cards: await cardsStatusRoute() }),
+    ],
+    ['GET', '/cards', () => cardsStatusRoute()],
     ['GET', '/jobs', () => ({ ok: true, active: publicJob(activeJob()), jobs: summariseJobs() })],
     [
       'GET',
@@ -364,6 +559,14 @@ export function makeRoutes({
     ['POST', '/search', ({ body }) => searchRoute(body)],
     ['POST', '/projects', ({ body }) => projectsRoute(body)],
     ['POST', '/open', ({ body }) => openRoute(body)],
+    // 会话内快捷开关（GET 同时走兼容只读通道；三条写接口路径各不相同，见 BY_PATH 以 path 为键）
+    ['GET', '/session', ({ url }) => sessionState(url.searchParams.get('sessionId'), url.searchParams.get('root') || '')],
+    ['POST', '/session/set', ({ body }) => sessionSetRoute(body)],
+    ['POST', '/project/set', ({ body }) => projectSetRoute(body)],
+    ['POST', '/project/index-set', ({ body }) => projectIndexRoute(body)],
+    // 会话归档：GET 走兼容只读通道，POST 手动触发一次
+    ['GET', '/archive', () => archiveStatusRoute()],
+    ['POST', '/archive/run', ({ body }) => archiveRunRoute(body)],
   ]
   const BY_PATH = new Map(ROUTES.map(([method, path, handler]) => [path, { method, handler }]))
 
@@ -428,7 +631,7 @@ export function makeRoutes({
     }
   }
 
-  return { route, state, searchRoute, configRoute, indexRoute, serviceRoute, projectsRoute, ROUTES }
+  return { route, state, searchRoute, configRoute, indexRoute, serviceRoute, projectsRoute, sessionState, archiveStatusRoute, archiveRunRoute, cardsStatusRoute, ROUTES }
 }
 
 /** Present one Fetch request as the node-style req the dispatcher already speaks. */
@@ -499,7 +702,7 @@ function responseSink() {
  */
 export function registerVectorMemoryRoutes(
   ctx,
-  { version, meta = null, supervisor, recall = null, projects = null, log } = {},
+  { version, meta = null, supervisor, recall = null, projects = null, session = null, archive = null, cards = null, log } = {},
 ) {
   const note = (message) => {
     try {
@@ -508,7 +711,7 @@ export function registerVectorMemoryRoutes(
       // ignore
     }
   }
-  const routes = makeRoutes({ version, meta, supervisor, recall, projects, log, ctx })
+  const routes = makeRoutes({ version, meta, supervisor, recall, projects, session, archive, cards, log, ctx })
   const ENDPOINTS = routes.ROUTES.map(([method, path]) => ({ path: `${PREFIX}${path}`, methods: [method] }))
 
   const asFetch = async (request) => {

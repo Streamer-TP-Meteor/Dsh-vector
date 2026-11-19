@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { cliPath, configPath, engineDir, pythonCandidates } from './config.js'
+import { cliPath, configPath, engineDir, pythonCandidates, readConfig } from './config.js'
 
 /**
  * Thin bridge to the local Python engine.
@@ -18,12 +18,16 @@ import { cliPath, configPath, engineDir, pythonCandidates } from './config.js'
 const MAX_OUTPUT = 4 * 1024 * 1024
 
 export function pythonPath(cfg) {
-  const configured = typeof cfg?.python === 'string' ? cfg.python : ''
-  if (configured && existsSync(configured)) return configured
-  const candidate = pythonCandidates().find((item) => existsSync(item))
-  if (candidate) return candidate
-  // Last resort: whatever "python" resolves to on PATH. The setup script exists
-  // precisely so that this branch is not the normal one.
+  const configured = typeof cfg?.python === 'string' ? cfg.python.trim() : ''
+  if (configured && (!configured.includes('/') && !configured.includes('\\') ? true : existsSync(configured))) return configured
+  // 没配过（或配的路径已经不存在）：按 paths.js 的候选顺序探测（插件 venv → 引擎 venv → PATH）。
+  for (const candidate of pythonCandidates()) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
+      if (existsSync(candidate)) return candidate
+    } else {
+      return candidate
+    }
+  }
   return 'python'
 }
 
@@ -94,6 +98,10 @@ export function runCli(cfg, args, { timeoutMs = 180000, signal, onLine } = {}) {
       reject(error instanceof Error ? error : new Error(String(error)))
       return
     }
+    // 先挂一个兜底 error 监听：下面 signal 已取消时会提前 return，
+    // 那时若 spawn 本身失败（python 路径不存在等），'error' 事件没人接 → 未捕获异常把宿主带走
+    // （外部审计 HOST-05 指出的真实风险）。
+    child.on('error', () => {})
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -161,9 +169,66 @@ export function parseJsonOutput(text, what = 'engine') {
   }
 }
 
-export async function httpJson(cfg, path, { method = 'GET', body, timeoutMs = 2500 } = {}) {
+// 并发闸门：检索请求一起涌进来时，别把 CPU 上的 0.6B 小模型压垮。
+// 实测 20 路并发会让单次延迟从 0.7s 涨到十几秒，撞上顶层的 12s 预算就整批降级；
+// 限流之后多出来的请求排队（最多 128 个），排不上就快速失败，让上层走归档通道。
+const DEFAULT_MAX_CONCURRENT = 6
+const GATE = { active: 0, waiters: [] }
+function gateLimit(cfg) {
+  const value = Number(cfg?.service?.max_concurrent)
+  if (Number.isFinite(value) && value >= 1) return Math.min(32, Math.floor(value))
+  return DEFAULT_MAX_CONCURRENT
+}
+function pumpGate() {
+  while (GATE.waiters.length) {
+    const next = GATE.waiters[0]
+    if (GATE.active >= next.limit) break
+    GATE.waiters.shift()
+    clearTimeout(next.timer)
+    GATE.active += 1
+    next.resolve()
+  }
+}
+async function acquireGate(cfg, waitMs) {
+  const limit = gateLimit(cfg)
+  if (GATE.active < limit) {
+    GATE.active += 1
+    return
+  }
+  if (GATE.waiters.length >= 128) throw new Error('向量服务繁忙（排队已满）')
+  await new Promise((resolve, reject) => {
+    const waiter = { limit, resolve, timer: null }
+    waiter.timer = setTimeout(() => {
+      const index = GATE.waiters.indexOf(waiter)
+      if (index >= 0) GATE.waiters.splice(index, 1)
+      reject(new Error(`向量服务繁忙（排队超过 ${Math.round(waitMs)}ms）`))
+    }, Math.max(200, waitMs))
+    GATE.waiters.push(waiter)
+  })
+}
+function releaseGate() {
+  GATE.active = Math.max(0, GATE.active - 1)
+  pumpGate()
+}
+
+export async function httpJson(cfg, path, { method = 'GET', body, timeoutMs = 2500, signal = null } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), Math.max(200, timeoutMs))
+  // 外部取消也要立刻断掉请求：只靠超时的话，调用方 1500ms 的预算是摆设（审计 HOST-03）。
+  const forwardAbort = () => {
+    try {
+      controller.abort()
+    } catch {
+      // ignore
+    }
+  }
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer)
+      throw new Error('已取消')
+    }
+    if (typeof signal.addEventListener === 'function') signal.addEventListener('abort', forwardAbort, { once: true })
+  }
   try {
     const response = await fetch(`${serviceUrl(cfg)}${path}`, {
       method,
@@ -181,10 +246,14 @@ export async function httpJson(cfg, path, { method = 'GET', body, timeoutMs = 25
     return data
   } finally {
     clearTimeout(timer)
+    if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', forwardAbort)
   }
 }
 
 /** /health returns { ok, embed, rerank, rss_mb, ... } or null when not running. */
+// 正在进行的「拉起服务」流程（防并发重启把加载中的进程杀掉）
+let ENSURE_INFLIGHT = null
+
 export async function health(cfg) {
   try {
     const data = await httpJson(cfg, '/health', { timeoutMs: 1500 })
@@ -256,6 +325,65 @@ export function stopServiceSync({ timeoutMs = 6000 } = {}) {
   }
 }
 
+/** 等到服务端口彻底关闭（重启前用，避免新进程绑不上）。 */
+export async function waitServiceDown(cfg, { timeoutMs = 8000, intervalMs = 300, healthFn = health } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const h = await healthFn(cfg)
+    if (!h) return true
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  return false
+}
+
+/**
+ * 把服务拉回到「embed 就绪」的状态，失败会重试。
+ *
+ * 为什么需要它：内存看守的重启是 stop → start 两步，中间任何一步抖一下
+ * （端口还没释放、python 冷启动被挤、模型加载超时）就会把服务留在「关着」的状态，
+ * 而下一轮守护要等 60 秒。这里做成「健康就返回、半死就先关再起、失败退避重试」。
+ */
+export async function ensureService(cfg, { attempts = 3, log = () => {}, onLine, healthFn = health, startFn = startService, stopFn = stopService, waitFn = waitReady } = {}) {
+  // 同一时刻只允许一个「拉起」流程在跑：守护 tick、预热任务、内存看守都可能同时触发，
+  // 并发拉起会把正在加载模型的进程反复杀掉重来（实测会陷入永远 embed=false 的循环）。
+  if (ENSURE_INFLIGHT) return ENSURE_INFLIGHT
+  const loadBudget = Math.max(15000, Number(cfg?.service?.start_timeout_sec || 90) * 1000)
+  ENSURE_INFLIGHT = (async () => {
+    let lastError = null
+    for (let i = 1; i <= Math.max(1, attempts); i += 1) {
+      const h = await healthFn(cfg)
+      if (h?.embed) return h
+      if (h && !h.embed_error) {
+        // 进程活着、模型还在加载：等它，别重启（重启只会把加载进度清零）
+        const ready = await waitFn(cfg, { timeoutMs: loadBudget })
+        if (ready) return ready
+        lastError = new Error('服务在加载但一直没就绪')
+      } else {
+        try {
+          if (h?.embed_error) {
+            await stopFn(cfg)
+            await waitServiceDown(cfg, { healthFn })
+          }
+          const started = await startFn(cfg, { onLine })
+          if (started?.embed) return started
+          const ready = await waitFn(cfg, { timeoutMs: loadBudget })
+          if (ready) return ready
+          lastError = new Error('服务已启动但模型未就绪')
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (i < attempts) {
+        log(`拉起向量服务第 ${i} 次失败，稍后重试：${lastError instanceof Error ? lastError.message : lastError}`)
+        await new Promise((r) => setTimeout(r, 800 * i))
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError || '向量服务不可用'))
+  })().finally(() => {
+    ENSURE_INFLIGHT = null
+  })
+  return ENSURE_INFLIGHT
+}
 export async function waitReady(cfg, { timeoutMs = 20000, intervalMs = 400 } = {}) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -266,25 +394,65 @@ export async function waitReady(cfg, { timeoutMs = 20000, intervalMs = 400 } = {
   return null
 }
 
-export async function search(cfg, { query, k, rerank, src, srcs, signal } = {}) {
+// 最近一次检索的时间戳：给「空闲时重启服务回收内存」用。
+let LAST_SEARCH_AT = 0
+export function lastSearchAt() {
+  return LAST_SEARCH_AT
+}
+
+/**
+ * 调用方常常没有配置对象（自动召回、统一检索、工具入口都传 null），
+ * 以前直接把这个 null 透下去 → service.host/port/max_concurrent 全部走缺省值，
+ * 用户改了端口/并发上限却静默不生效（外部审计 HOST-02）。这里统一兜底读配置。
+ */
+async function resolveConfig(cfg) {
+  if (cfg && typeof cfg === 'object' && Object.keys(cfg).length) return cfg
+  try {
+    const read = await readConfig()
+    if (read?.config) return read.config
+  } catch {
+    // 配置读不出来也不能让检索直接崩：退化成内置缺省值继续。
+  }
+  return cfg || {}
+}
+
+export async function search(cfg, { query, k, rerank, src, srcs, signal, timeoutMs = 60000, allowCli = true } = {}) {
+  LAST_SEARCH_AT = Date.now()
+  if (signal?.aborted) throw new Error('已取消')
+  const conf = await resolveConfig(cfg)
   // 优先走常驻服务的 /search：省掉每次约 250ms 的 python 启动开销（每回合向量检索都走这条路）。
   // 服务没起来/接口异常时静默回退到 CLI，保证行为不变。
+  // timeoutMs / allowCli：工具调用路径给的是「有预算的检索」（几秒内必须有答案），
+  // 所以既能收紧 HTTP 超时，也能在服务不可用时直接失败，让上层降级到归档通道而不是等 CLI 冷启动。
+  const budgetMs = Math.max(500, Number(timeoutMs) || 60000)
+  // 排队预算给到总预算的六成：20 路突发在一档 4 并发下大约要 3.5–4 秒，
+  // 只给 3 秒会让排在后面的请求白等一场再失败，降级成归档反而更难解释。
+  const gateWaitMs = Math.min(10000, Math.max(800, budgetMs - 2000))
+  await acquireGate(conf, gateWaitMs)
   try {
     const body = { query: String(query ?? '') }
     if (k) body.k = Number(k)
     if (src) body.src = String(src)
     if (Array.isArray(srcs) && srcs.length) body.srcs = srcs.map(String)
     if (rerank === true || rerank === false) body.rerank = rerank
-    const data = await httpJson(cfg, '/search', { method: 'POST', body, timeoutMs: 60000 })
+    const data = await httpJson(conf, '/search', { method: 'POST', body, timeoutMs: budgetMs, signal })
     // 服务端回显 query/k：对不上就说明这条请求没被正确执行，宁可回退 CLI 也不要返回错结果
     const echoed = data && typeof data.query === 'string' ? data.query === String(query ?? '') : true
     if (data && Array.isArray(data.hits) && echoed) {
-      if (process.env.VM_DEBUG) console.error('[engine.search] 服务端', serviceUrl(cfg), 'k=', k, 'hits=', data.hits.length, 'first=', data.hits[0]?.path, 'srvMs=', data.info?.ms)
+      if (process.env.VM_DEBUG) console.error('[engine.search] 服务端', serviceUrl(conf), 'k=', k, 'hits=', data.hits.length, 'first=', data.hits[0]?.path, 'srvMs=', data.info?.ms)
       return data
     }
   } catch (error) {
     if (process.env.VM_DEBUG) console.error('[engine.search] 服务端检索失败，回退 CLI：', error?.message || error)
+    // 调用方主动取消（超时/取消）不算「服务不可用」，别把已取消伪装成一次降级
+    if (signal?.aborted) throw new Error('已取消')
+    if (allowCli === false) {
+      throw new Error(`向量服务不可用（${error?.message || error}）`)
+    }
+  } finally {
+    releaseGate()
   }
+  if (signal?.aborted) throw new Error('已取消')
   const args = ['search', String(query ?? '')]
   if (k) args.push('-k', String(k))
   if (src) args.push('--src', String(src))
@@ -292,18 +460,21 @@ export async function search(cfg, { query, k, rerank, src, srcs, signal } = {}) 
   if (rerank === true) args.push('--rerank')
   if (rerank === false) args.push('--no-rerank')
   args.push('--json')
-  const { code, stdout, stderr } = await runCli(cfg, args, { timeoutMs: 240000, signal })
+  // CLI 回退路径同样要有预算：给 240s 的旧值会让「几秒内必须有答案」的调用白等 4 分钟。
+  const cliTimeoutMs = Math.max(5000, Math.min(240000, Number(timeoutMs) * 2 || 240000))
+  const { code, stdout, stderr } = await runCli(conf, args, { timeoutMs: cliTimeoutMs, signal })
   if (code !== 0) throw new Error(`检索失败（exit ${code}）：${(stderr || stdout).slice(-400)}`)
   return parseJsonOutput(stdout, '检索')
 }
 
 export async function buildIndex(cfg, { force = false, only = null, onLine, signal } = {}) {
+  const conf = await resolveConfig(cfg)
   const args = ['index', '--json']
   if (force) args.push('--force')
   // only: 只更新这些源（项目标签或源名），其余源的块原样保留 —— 给"只索引某个项目"用。
   const onlyList = Array.isArray(only) ? only.filter(Boolean) : only ? [only] : []
   if (onlyList.length) args.push('--only', onlyList.join(','))
-  const { code, stdout, stderr } = await runCli(cfg, args, { timeoutMs: 1800000, onLine, signal })
+  const { code, stdout, stderr } = await runCli(conf, args, { timeoutMs: 1800000, onLine, signal })
   if (code !== 0) throw new Error(`索引失败（exit ${code}）：${(stderr || stdout).slice(-600)}`)
   return parseJsonOutput(stdout, '索引')
 }
@@ -325,6 +496,7 @@ export function normalizeHits(raw) {
     const line = Number(hit?.line)
     if (Number.isInteger(line)) out.line = line
     if (hit?.snippet != null) out.snippet = String(hit.snippet)
+    if (hit?.date) out.date = String(hit.date)
     return out
   })
 }

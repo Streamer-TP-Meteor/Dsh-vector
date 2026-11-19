@@ -68,17 +68,42 @@ jobs:
           }
           "setup.ps1 parses"
 
-      - name: 不含个人路径 / 密钥痕迹
+      - name: 不含个人路径 / 密钥痕迹 / 打包垃圾
         shell: pwsh
         run: |
           # 这个项目是从一台私人机器上长出来的，最容易泄露的是写死的绝对路径而不是密钥。
           # 注意：本文件里就写着这些模式，所以要排除它自己，否则自己会命中自己。
-          $pattern = 'DSH_Space|train-venv|Users[\\/]Administrator|D:[\\/]dsh-|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{24,}'
-          $hits = @(git grep -n -I -E $pattern -- . ':(exclude).git' ':(exclude).github/workflows/ci.yml' 2>$null)
-          if ($LASTEXITCODE -eq 0 -and $hits.Count -gt 0) {
-            $hits | ForEach-Object { Write-Host "::error::疑似个人痕迹或密钥：$_" }
+          # 分隔符要允许 1~2 个：源码里可能被转义成双反斜杠（"D:\\vector-memory-data"），只写一个会漏。
+          $pattern = 'DSH_Space|train-venv|mega_rag|dsh-vec(?![-\w])|dsh-plugins|Users[\\/]{1,2}Administrator|[A-Za-z]:[\\/]{1,2}dsh-|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{24,}'
+          $self = '.github/workflows/ci.yml'
+          $binary = '\.(png|jpg|jpeg|gif|webp|ico|pdf|zip|gz|zst|zstd|npz|npy|bin|exe|dll|pyc|woff2?|ttf|mp4|webm)$'
+          $files = @(@(git ls-files) + @(git ls-files --others --exclude-standard))
+          $files = $files | Where-Object { $_ -and $_ -ne $self } | Sort-Object -Unique
+          $hits = @()
+          foreach ($f in $files) {
+            if ($f -match $binary) { continue }
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+            $text = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+            if ($null -eq $text) { continue }
+            $lineNo = 0
+            foreach ($line in ($text -split "`r?`n")) {
+              $lineNo++
+              if ($line -match $pattern) { $hits += ("{0}:{1}: {2}" -f $f, $lineNo, $line.Trim()) }
+            }
+          }
+          if ($hits.Count -gt 0) {
+            foreach ($h in $hits) { Write-Host ("::error::疑似个人痕迹或密钥：{0}" -f $h) }
             throw "发现疑似个人路径/密钥痕迹，请改成占位符"
           }
-          "no personal paths or key patterns"
-          # git grep 没命中时退出码是 1，会把整步判成失败，所以显式归零
-          exit 0
+          "no personal paths or key patterns ($($files.Count) files)"
+
+          # 打包垃圾：__pycache__ / *.pyc 会随发布包泄出本机字节码（里面带着绝对路径）
+          $junk = @()
+          $junk += @(Get-ChildItem -Recurse -Force -File -Include *.pyc,*.pyo -ErrorAction SilentlyContinue)
+          $junk += @(Get-ChildItem -Recurse -Force -Directory -Filter __pycache__ -ErrorAction SilentlyContinue)
+          $junk = @($junk | Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' })
+          if ($junk.Count -gt 0) {
+            foreach ($j in $junk) { Write-Host ("::error::打包垃圾：{0}" -f $j.FullName) }
+            throw "仓库里不该有 __pycache__ / *.pyc"
+          }
+          "no build artifacts"

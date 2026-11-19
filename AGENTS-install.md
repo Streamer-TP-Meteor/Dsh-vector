@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DataDir <用户给�
 <DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd plugin --profile desktop add "<插件绝对路径>"
 ```
 
-- DSH 常见安装在 `C:\Program Files\DeepSeek Harness`、`C:\Program Files\DeepSeek Harness`，先用 `Get-Command dsh` 或问用户确认。
+- DSH 可能安装在任意目录（例如某个盘符下的 `...\DSH-dsk`，或 `C:\Program Files\DeepSeek Harness`），先用 `Get-Command dsh` 或问用户确认，不要猜。
 - profile 名默认 `desktop`；若用户用的是别的 profile，先问清楚。
 - 这个命令内部是 pnpm，失败常见原因是目录里有 `node_modules` 锁或网络不通；把原始报错交给用户，不要自己 `rm -rf`。
 

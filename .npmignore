@@ -1,0 +1,12 @@
+# 打包垃圾与实例数据：绝不进发布包
+__pycache__/
+*.pyc
+*.pyo
+*.tmp-*
+*.tmp*
+.index.lock
+config.json
+session-prefs.json
+data/
+evals/
+test/

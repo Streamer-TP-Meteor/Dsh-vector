@@ -18,7 +18,11 @@ import vindex
 
 def cmd_index(cfg, a):
     only = [x.strip() for x in (getattr(a, "only", None) or "").split(",") if x.strip()] or None
-    st = vindex.build_index(cfg, force=a.force, verbose=not a.quiet, only=only)
+    st = None
+    # 单写者锁：两个索引进程同时写同一份索引会互相覆盖；中途被 SIGTERM 也只会留下临时文件，
+    # 最终文件仍是旧的完整索引（审计 PY-01）。
+    with vindex.index_lock(vindex.paths(cfg)):
+        st = vindex.build_index(cfg, force=a.force, verbose=not a.quiet, only=only)
     if a.json:
         print(json.dumps(st, ensure_ascii=False))
     else:
@@ -45,6 +49,20 @@ def _n_chunks(cfg):
             return sum(1 for _ in f)
     except Exception:
         return 0
+
+
+def cmd_outline(cfg, a):
+    res = vindex.outline(cfg, src=a.src, per_src=a.per_src)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=1))
+        return
+    for s in res["sources"]:
+        print("%s  %d 文件 / %d 块  (%d 个主题)" % (s["label"], s["files"], s["chunks"], s["topic_total"]))
+        if s.get("clusters"):
+            print("  目录：" + "、".join("%s(%d)" % (c["path"], c["chunks"]) for c in s["clusters"]))
+        if s["topics"]:
+            print("  主题：" + "、".join("%s(%d)" % (t["topic"], t["count"]) for t in s["topics"]))
+    print("（共 %d 块，%dms）" % (res["chunks"], res["ms"]))
 
 
 def cmd_status(cfg, a):
@@ -93,11 +111,17 @@ def main():
     p.add_argument("-k", type=int, default=None)
     p.add_argument("--rerank", action="store_true", help="启用 Qwen3-Reranker 重排（CPU 上约 +8–20s/次）")
     p.add_argument("--no-rerank", action="store_true", help="强制不重排（默认即不重排）")
-    p.add_argument("--src", default=None, help="只搜某一个源（常驻源名或项目源名）")
+    p.add_argument("--src", default=None, help="只搜某一个源（memory / harness-project / 项目名）")
     p.add_argument("--srcs", default=None, help="逗号分隔的多个源，例如 memory,proj-e-demo")
     p.add_argument("--json", action="store_true")
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("outline", help="主题地图（结构派生，不调模型）")
+    p.add_argument("--src", default=None, help="只看某个源（源名或标签）")
+    p.add_argument("--per-src", type=int, default=6, help="每个源列几个主题/目录，默认 6")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_outline)
 
     p = sub.add_parser("status", help="状态")
     p.set_defaults(fn=cmd_status)

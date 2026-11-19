@@ -26,7 +26,7 @@ does, what it does not do, and what you are trusting when you install it.
 
 | Behaviour | Why | Implication |
 |---|---|---|
-| Runs a local HTTP service on `127.0.0.1:8479` | so search costs ~0.2 s instead of spawning Python each time | any local process can reach it; the API is meant for the DSH host, not a security boundary |
+| Runs a local HTTP service on `127.0.0.1:8479` | so search costs ~0.2 s instead of spawning Python each time | bound to loopback only, and every request is checked for a loopback `Host`, a loopback (or absent) `Origin`, and rejection of `Sec-Fetch-Site: cross-site`, so a web page cannot drive it; a local process without a browser origin still can, because there is no token auth |
 | Binds loopback only, and refuses non-loopback unless `service.allow_remote` is explicitly set to `true` | a misconfiguration must not publish your notes to the LAN | if you enable it, you own the consequences |
 | Spawns `python.exe` and, for the "open folder" buttons, your OS file manager | that is how the engine runs | no shell string interpolation: arguments are passed as an array |
 | Reads and writes `engine/config.json` | shared configuration between the two halves | a corrupt config is reported, never silently rewritten into something else |

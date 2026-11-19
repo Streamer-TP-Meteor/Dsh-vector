@@ -92,13 +92,16 @@ export function startJob({ kind, label, runner }) {
     if (job.log.length > MAX_LOG) job.log.splice(0, job.log.length - MAX_LOG)
   }
   log(`${job.label} 开始`)
-  Promise.resolve()
+  // done 让调用方（比如 vmemory_index 工具）能等这次任务真正结束，又不必绕过单飞队列自己跑 runner：
+  // 绕过队列会让外部取消（SIGTERM）落在写盘中间，正是审计 PY-01/STB-01 的放大器。
+  const done = Promise.resolve()
     .then(() => runner({ log, signal: controller.signal, job }))
     .then((result) => {
       job.status = 'done'
       job.result = result ?? null
       job.finishedAt = Date.now()
       log(`完成，用时 ${((job.finishedAt - job.startedAt) / 1000).toFixed(1)}s`)
+      return { ok: true, job: publicJob(job) }
     })
     .catch((error) => {
       const aborted = controller.signal.aborted
@@ -106,12 +109,13 @@ export function startJob({ kind, label, runner }) {
       job.error = error instanceof Error ? error.message : String(error)
       job.finishedAt = Date.now()
       log(`${aborted ? '已取消' : '失败'}：${job.error}`)
+      return { ok: false, cancelled: aborted, error: job.error, job: publicJob(job) }
     })
     .finally(() => {
       if (activeId === job.id) activeId = null
       trimFinished()
     })
-  return { ok: true, job: publicJob(job) }
+  return { ok: true, job: publicJob(job), done }
 }
 
 /**
@@ -130,7 +134,8 @@ export async function waitIdle(timeoutMs = 180000) {
   return !activeJob()
 }
 
-export function cancelJob(id) {  const job = id ? getJob(id) : activeJob()
+export function cancelJob(id) {
+  const job = id ? getJob(id) : activeJob()
   if (!job) return { ok: false, error: '没有找到这个任务' }
   if (job.status !== 'running') return { ok: false, error: '任务已经结束' }
   job.controller.abort()

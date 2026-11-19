@@ -1,5 +1,5 @@
 import { readConfig } from './config.js'
-import { health, startService } from './engine.js'
+import { ensureService, health, lastSearchAt, startService, stopService, waitServiceDown } from './engine.js'
 import { pushEvent } from './events.js'
 import { startJob, waitIdle } from './jobs.js'
 
@@ -16,6 +16,30 @@ import { startJob, waitIdle } from './jobs.js'
  */
 
 const TICK_MS = 60 * 1000
+
+/**
+ * 纯判断：这次要不要重启服务回收内存（不碰任何 IO，方便单测）。
+ * - limitMb <= 0 表示用户关掉了回收
+ * - idleMin > 0 时要求「距上次检索超过 idleMin 分钟」，避免在用户正在用时重启
+ */
+export function shouldRecycle({ rssMb, limitMb, idleMin = 0, lastSearchAt = 0, now = Date.now() }) {
+  const rss = Number(rssMb || 0)
+  const limit = Number(limitMb || 0)
+  if (!(limit > 0) || !(rss > limit)) return false
+  const idle = Number(idleMin || 0)
+  if (idle > 0 && now - Number(lastSearchAt || 0) < idle * 60 * 1000) return false
+  return true
+}
+/**
+ * 服务到底空闲了多久（毫秒）。
+ * 优先用服务自己上报的 last_req_age_s——它看得到所有客户端（宿主、CLI、索引、另一个 DSH 实例）；
+ * 老版本服务没有这个字段时，退回宿主内存里的 lastSearchAt。
+ */
+export function serviceIdleMs(running, hostLastSearchAt = 0, now = Date.now()) {
+  const age = running?.last_req_age_s
+  if (typeof age === 'number' && Number.isFinite(age)) return Math.max(0, age * 1000)
+  return Math.max(0, now - (Number(hostLastSearchAt) || 0))
+}
 
 export function createSupervisor({ log = () => {}, getVersion = () => '0.0.0' } = {}) {
   let started = false
@@ -78,6 +102,36 @@ export function createSupervisor({ log = () => {}, getVersion = () => '0.0.0' } 
     return { ok: true, job: job.job }
   }
 
+  /**
+   * 内存看守：0.6B 模型在 CPU 上每处理一次嵌入，RSS 会缓慢上涨（实测约 +2.2MB/块，且不回落）。
+   * 空闲够久、内存又超阈值时，重启一次服务把内存收回到 ~1.7GB。
+   * 走 startJob 是为了跟索引任务串行：索引在跑时本轮直接跳过，不会把索引打断。
+   */
+  async function recycleIfBloated(config, running) {
+    const limitMb = Number(config.service?.recycle_rss_mb || 0)
+    const rss = Number(running?.rss_mb || 0)
+    const idleMin = Number(config.service?.recycle_idle_min ?? 10)
+    // 空闲判定优先用「服务自己看到的最后一次请求」（/health 的 last_req_age_s）：
+    // 宿主内存里的 lastSearchAt() 只记录本进程发起的检索，CLI / 索引 / 另一个 DSH 实例
+    // 打过来的请求它看不见，会出现「明明在忙着却在空闲窗口被重启」。
+    const idleMs = serviceIdleMs(running, lastSearchAt())
+    const lastActiveAt = Date.now() - idleMs
+    if (!shouldRecycle({ rssMb: rss, limitMb, idleMin, lastSearchAt: lastActiveAt, now: Date.now() })) return
+    const job = startJob({
+      kind: 'recycle',
+      label: `回收向量服务内存（RSS ${Math.round(rss)}MB）`,
+      runner: async ({ log: jobLog }) => {
+        await stopService(config)
+        await waitServiceDown(config)
+        const h = await ensureService(config, { attempts: 3, log: jobLog })
+        jobLog(`服务已重启：rss ${Math.round(Number(h?.rss_mb || 0))}MB`)
+        return { before_mb: Math.round(rss), after_mb: Math.round(Number(h?.rss_mb || 0)) }
+      },
+    })
+    if (!job.ok) return
+    note('info', `向量服务内存 ${Math.round(rss)}MB 超过 ${limitMb}MB 且空闲 ${Math.round(idleMs / 60000)} 分钟，已排队重启回收`)
+  }
+
   async function startupPass() {
     try {
       const { config } = await readConfig()
@@ -118,8 +172,9 @@ export function createSupervisor({ log = () => {}, getVersion = () => '0.0.0' } 
         note('warn', '检测到向量服务已退出，准备重新拉起')
         wasRunning = false
       }
+      if (running?.embed) await recycleIfBloated(config, running).catch(() => {})
       if (!running?.embed && config.service?.prewarm !== false) {
-        await warmService(config).catch((error) => {
+        await ensureService(config, { attempts: 2, log: (line) => note('info', line) }).catch((error) => {
           lastWarmError = error instanceof Error ? error.message : String(error)
           note('warn', `自动拉起服务失败：${lastWarmError}`)
         })
